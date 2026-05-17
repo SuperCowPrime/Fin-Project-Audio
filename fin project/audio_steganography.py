@@ -286,7 +286,7 @@ BIT_OFFSET = 10     # skip first N coefficients (wavelet boundary effects)
 # The header stores all meta information needed to decode, so the receiver
 # does NOT need to pass a meta dict — they just call decode() and get the result.
 #
-# Header layout (17 bytes = 136 bits), big-endian:
+# Header layout (17 bytes = 200 bits), big-endian:
 #   B  (1 byte)  : mode         — 0=text, 1=image
 #   I  (4 bytes) : payload_len  — upgraded from H(2) to I(4): max 4,294,967,295 bytes
 #   I  (4 bytes) : grid_side    — upgraded from H(2) to I(4): supports huge grids
@@ -433,7 +433,7 @@ def embed_text_bits_override(hf_band: np.ndarray,
     Returns (modified band, baseline) — baseline is stored in the header.
     """
     result   = hf_band.copy()
-    baseline = np.abs(hf_band).mean() + 0.1
+    baseline = np.abs(hf_band).mean() + 0.005
     for i, bit in enumerate(bits):
         idx         = i + PAYLOAD_OFFSET
         result[idx] = baseline * (1 if bit else -1)
@@ -482,8 +482,6 @@ def embed_addition(cover_audio: np.ndarray,
                    alpha: float       = 0.01,
                    wavelet: str       = 'db4',
                    dwt_level: int     = 3,
-                   nperseg: int       = 256,
-                   noverlap: int      = 128,
                    encrypt: bool      = True,
                    henon_params: dict = None,
                    arnold_iterations: int = 5) -> tuple:
@@ -536,28 +534,37 @@ def embed_addition(cover_audio: np.ndarray,
 
     else:
         # ── IMAGE PATH ─────────────────────────────────────────────────
-        image        = secret
-        orig_shape   = image.shape
-        square, _    = image_to_square(image)
+        # Bit-pack image pixels exactly like text (8 bits per pixel, ±BIT_SCALE).
+        # This is inaudible for the same reason text embedding is inaudible.
+        image          = secret
+        H_orig, W_orig = image.shape
+
+        # Resize image down if 8 bits/pixel exceeds the available DWT coefficients
+        available_bits = len(coeffs[1]) - PAYLOAD_OFFSET
+        if H_orig * W_orig * 8 > available_bits:
+            side  = int(math.sqrt(available_bits // 8))
+            image = np.array(
+                PILImage.fromarray(image.astype(np.uint8)).resize(
+                    (side, side), PILImage.BILINEAR),
+                dtype=np.uint8)
+            print(f"Image resized to {image.shape} to fit available DWT coefficients.")
+        H, W = image.shape
+
+        raw_bytes   = image.flatten().astype(np.uint8)
+        payload_len = len(raw_bytes)
+        grid, _     = pad_to_square(raw_bytes)
 
         if encrypt:
-            square = encrypt_grid(square, henon_params, arnold_iterations)
+            grid = encrypt_grid(grid, henon_params, arnold_iterations)
 
-        secret_sig   = grid_to_audio_signal(square, nperseg=nperseg, noverlap=noverlap)
-        target_len   = len(coeffs[1])
-        if len(secret_sig) >= target_len:
-            trimmed  = secret_sig[:target_len]
-        else:
-            trimmed  = np.pad(secret_sig, (0, target_len - len(secret_sig)))
+        all_bytes = grid.flatten()
+        bits      = text_bytes_to_bits(all_bytes)
+        n_bits    = len(bits)
 
-        coeffs[1]    = coeffs[1] + alpha * trimmed
-
-        # Embed header into the first HEADER_BITS positions of the HF band
-        hdr_arr      = _pack_header(1, orig_shape[0] * orig_shape[1],
-                                     square.shape[0],
-                                     orig_shape[0], orig_shape[1],
-                                     0, alpha=alpha)
-        coeffs[1]    = _embed_header_bits(coeffs[1], hdr_arr)
+        hdr_arr   = _pack_header(1, payload_len, grid.shape[0],
+                                  H, W, n_bits, alpha=alpha)
+        hf_mod    = _embed_header_bits(hf_orig, hdr_arr)
+        coeffs[1] = embed_text_bits_addition(hf_mod, bits)
 
     stego_audio = dwt_reconstruct(coeffs, wavelet=wavelet)[:len(cover_audio)]
     return stego_audio
@@ -571,8 +578,6 @@ def decode_addition(stego_audio: np.ndarray,
                     original_audio: np.ndarray,
                     wavelet: str       = 'db4',
                     dwt_level: int     = 3,
-                    nperseg: int       = 256,
-                    noverlap: int      = 128,
                     decrypt: bool      = True,
                     henon_params: dict = None,
                     arnold_iterations: int = 5):
@@ -619,22 +624,22 @@ def decode_addition(stego_audio: np.ndarray,
 
     else:
         # ── IMAGE PATH ─────────────────────────────────────────────────
-        alpha         = meta["alpha"]
+        n_bits        = meta["n_bits"]
+        payload_len   = meta["payload_len"]
         grid_shape    = meta["grid_shape"]
         H, W          = meta["orig_shape"]
-        orig_shape    = (H, W)
-        min_len       = min(len(hf_stego), len(hf_original))
-        secret_sig    = (hf_stego[:min_len] - hf_original[:min_len]) / alpha
 
-        enc_grid      = audio_signal_to_grid(secret_sig, grid_shape,
-                                              nperseg=nperseg, noverlap=noverlap)
+        bits          = decode_text_bits_addition(hf_stego, hf_original, n_bits)
+        all_enc_bytes = bits_to_text_bytes(bits, grid_shape[0] * grid_shape[1])
+        enc_grid      = all_enc_bytes.reshape(grid_shape)
+
         if decrypt:
             dec_grid  = decrypt_grid(enc_grid, henon_params, arnold_iterations)
         else:
             dec_grid  = enc_grid
 
-        H, W          = orig_shape
-        return dec_grid[:H, :W]
+        raw_bytes = dec_grid.flatten()[:payload_len]
+        return raw_bytes.reshape(H, W)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -645,8 +650,6 @@ def embed_override(cover_audio: np.ndarray,
                    secret,
                    wavelet: str       = 'db4',
                    dwt_level: int     = 3,
-                   nperseg: int       = 256,
-                   noverlap: int      = 128,
                    encrypt: bool      = True,
                    henon_params: dict = None,
                    arnold_iterations: int = 5) -> tuple:
@@ -690,29 +693,41 @@ def embed_override(cover_audio: np.ndarray,
 
     else:
         # ── IMAGE PATH ─────────────────────────────────────────────────
-        image        = secret
-        orig_shape   = image.shape
-        square, _    = image_to_square(image)
+        # Bit-pack image pixels like text (8 bits per pixel, sign-based encoding).
+        # Avoids the noisy STFT/ISTFT pipeline entirely.
+        image          = secret
+        H_orig, W_orig = image.shape
+
+        # Resize image down if 8 bits/pixel exceeds the available DWT coefficients
+        available_bits = len(coeffs[1]) - PAYLOAD_OFFSET
+        if H_orig * W_orig * 8 > available_bits:
+            side  = int(math.sqrt(available_bits // 8))
+            image = np.array(
+                PILImage.fromarray(image.astype(np.uint8)).resize(
+                    (side, side), PILImage.BILINEAR),
+                dtype=np.uint8)
+            print(f"Image resized to {image.shape} to fit available DWT coefficients.")
+        H, W = image.shape
+
+        raw_bytes   = image.flatten().astype(np.uint8)
+        payload_len = len(raw_bytes)
+        grid, _     = pad_to_square(raw_bytes)
 
         if encrypt:
-            square = encrypt_grid(square, henon_params, arnold_iterations)
+            grid = encrypt_grid(grid, henon_params, arnold_iterations)
 
-        secret_sig   = grid_to_audio_signal(square, nperseg=nperseg, noverlap=noverlap)
-        target_len   = len(coeffs[1])
-        if len(secret_sig) >= target_len:
-            trimmed  = secret_sig[:target_len]
-        else:
-            trimmed  = np.pad(secret_sig, (0, target_len - len(secret_sig)))
+        all_bytes = grid.flatten()
+        bits      = text_bytes_to_bits(all_bytes)
+        n_bits    = len(bits)
 
-        coeff_scale  = np.std(hf_orig) / (np.std(trimmed) + 1e-10)
-        coeffs[1]    = trimmed * coeff_scale
-
-        # Embed header at the start of the HF band
-        hdr_arr      = _pack_header(1, orig_shape[0] * orig_shape[1],
-                                     square.shape[0],
-                                     orig_shape[0], orig_shape[1],
-                                     0, coeff_scale=coeff_scale)
-        coeffs[1]    = _embed_header_bits(coeffs[1], hdr_arr)
+        new_hf, baseline = embed_text_bits_override(hf_orig, bits)
+        hdr_arr   = _pack_header(1, payload_len, grid.shape[0],
+                                  H, W, n_bits)
+        hdr_bits  = np.unpackbits(hdr_arr)
+        for i, bit in enumerate(hdr_bits):
+            idx         = BIT_OFFSET + i
+            new_hf[idx] = baseline * (1 if bit else -1)
+        coeffs[1] = new_hf
 
     stego_audio = dwt_reconstruct(coeffs, wavelet=wavelet)[:len(cover_audio)]
     return stego_audio
@@ -725,8 +740,6 @@ def embed_override(cover_audio: np.ndarray,
 def decode_override(stego_audio: np.ndarray,
                     wavelet: str       = 'db4',
                     dwt_level: int     = 3,
-                    nperseg: int       = 256,
-                    noverlap: int      = 128,
                     decrypt: bool      = True,
                     henon_params: dict = None,
                     arnold_iterations: int = 5):
@@ -770,21 +783,22 @@ def decode_override(stego_audio: np.ndarray,
 
     else:
         # ── IMAGE PATH ─────────────────────────────────────────────────
-        coeff_scale = meta["coeff_scale"]
-        grid_shape  = meta["grid_shape"]
-        H, W        = meta["orig_shape"]
-        orig_shape  = (H, W)
+        n_bits        = meta["n_bits"]
+        payload_len   = meta["payload_len"]
+        grid_shape    = meta["grid_shape"]
+        H, W          = meta["orig_shape"]
 
-        secret_sig  = hf / coeff_scale
-        enc_grid    = audio_signal_to_grid(secret_sig, grid_shape,
-                                            nperseg=nperseg, noverlap=noverlap)
+        bits          = decode_text_bits_override(hf, n_bits)
+        all_enc_bytes = bits_to_text_bytes(bits, grid_shape[0] * grid_shape[1])
+        enc_grid      = all_enc_bytes.reshape(grid_shape)
 
         if decrypt:
-            dec_grid = decrypt_grid(enc_grid, henon_params, arnold_iterations)
+            dec_grid  = decrypt_grid(enc_grid, henon_params, arnold_iterations)
         else:
-            dec_grid = enc_grid
+            dec_grid  = enc_grid
 
-        return dec_grid[:H, :W]
+        raw_bytes = dec_grid.flatten()[:payload_len]
+        return raw_bytes.reshape(H, W)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
