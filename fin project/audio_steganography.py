@@ -1,4 +1,5 @@
 """
+
 Audio Steganography with Chaotic Encryption
 ============================================
 Based on: Nasr et al. (2024) - Scientific Reports, 14:22054
@@ -218,56 +219,8 @@ def image_to_square(image: np.ndarray) -> tuple:
     square[:H, :W] = image
     return square, (H, W)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 3 — IMAGE ↔ AUDIO CONVERSION  (STFT / ISTFT — approximate)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def grid_to_audio_signal(grid: np.ndarray,
-                          nperseg: int = 256, noverlap: int = 128) -> np.ndarray:
-    """
-    Convert a 2D uint8 grid to a 1D audio-like signal using ISTFT.
-
-    The grid is resized to match the ISTFT spectrogram dimensions
-    (n_freq = nperseg//2+1  frequency bins), then passed through ISTFT.
-    This is used for IMAGE payloads only.
-
-    NOTE: This is a LOSSY transform — suitable for images (approximate
-    recovery is acceptable) but NOT for text (which requires exact bytes).
-    """
-    n_freq  = nperseg // 2 + 1
-    n_time  = max(grid.shape[1], 32)
-    resized = np.array(
-        PILImage.fromarray(grid.astype(np.uint8)).resize(
-            (n_time, n_freq), PILImage.BILINEAR),
-        dtype=np.float64
-    )
-    spec         = ((resized - 127.5) / 127.5).astype(np.complex128)
-    _, audio_sig = istft(spec, nperseg=nperseg, noverlap=noverlap)
-    return audio_sig.real
-
-
-def audio_signal_to_grid(audio_signal: np.ndarray,
-                          grid_shape: tuple,
-                          nperseg: int = 256, noverlap: int = 128) -> np.ndarray:
-    """
-    Convert a 1D audio signal back to a 2D uint8 grid using STFT.
-    Inverse of grid_to_audio_signal().
-    """
-    H, W = grid_shape
-    _, _, spec = stft(audio_signal, nperseg=nperseg, noverlap=noverlap)
-    sr = np.real(spec)
-    mn, mx = sr.min(), sr.max()
-    norm = ((sr - mn) / (mx - mn) * 255).astype(np.uint8) if mx > mn \
-           else np.zeros_like(sr, dtype=np.uint8)
-    return np.array(
-        PILImage.fromarray(norm).resize((W, H), PILImage.BILINEAR),
-        dtype=np.uint8
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SECTION 4 — TEXT ↔ DWT BITS  (exact, lossless)
+# SECTION 3 — TEXT ↔ DWT BITS  (exact, lossless)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # We skip the STFT conversion for text and instead directly encode each bit
@@ -456,7 +409,7 @@ def decode_text_bits_override(hf_stego: np.ndarray,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 5 — DWT DECOMPOSITION / RECONSTRUCTION
+# SECTION 4 — DWT DECOMPOSITION / RECONSTRUCTION
 # ─────────────────────────────────────────────────────────────────────────────
 
 def dwt_decompose(audio: np.ndarray,
@@ -474,7 +427,7 @@ def dwt_reconstruct(coeffs: list, wavelet: str = 'db4') -> np.ndarray:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 6 — EMBED  (addition method)
+# SECTION 5 — EMBED  (addition method)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def embed_addition(cover_audio: np.ndarray,
@@ -571,7 +524,7 @@ def embed_addition(cover_audio: np.ndarray,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 7 — DECODE  (addition method)
+# SECTION 6 — DECODE  (addition method)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def decode_addition(stego_audio: np.ndarray,
@@ -643,7 +596,7 @@ def decode_addition(stego_audio: np.ndarray,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 8 — EMBED  (override method)
+# SECTION 7 — EMBED  (override method)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def embed_override(cover_audio: np.ndarray,
@@ -734,7 +687,7 @@ def embed_override(cover_audio: np.ndarray,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 9 — DECODE  (override method)
+# SECTION 8 — DECODE  (override method)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def decode_override(stego_audio: np.ndarray,
@@ -802,7 +755,7 @@ def decode_override(stego_audio: np.ndarray,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 10 — QUALITY METRICS
+# SECTION 9 — QUALITY METRICS
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_psnr(original: np.ndarray, recovered: np.ndarray,
@@ -830,185 +783,3 @@ def text_match_score(original: str, recovered: str) -> float:
         return 100.0
     matches = sum(a == b for a, b in zip(original, recovered[:len(original)]))
     return 100.0 * matches / len(original)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SECTION 11 — DEMO
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _make_test_image(N: int = 64) -> np.ndarray:
-    """Synthetic N×N grayscale test image with gradient + circle."""
-    img    = np.zeros((N, N), dtype=np.uint8)
-    center = N // 2
-    for i in range(N):
-        for j in range(N):
-            img[i, j] = int((i + j) / (2 * N) * 200)
-            if abs((i - center) ** 2 + (j - center) ** 2 - (N // 3) ** 2) < 30:
-                img[i, j] = 255
-    return img
-
-
-def _make_cover_audio(duration: float = 2.0,
-                      sample_rate: int = 44100) -> np.ndarray:
-    """Synthetic two-tone jingle with noise."""
-    t = np.linspace(0, duration, int(sample_rate * duration))
-    return (0.5 * np.sin(2 * np.pi * 440 * t) +
-            0.3 * np.sin(2 * np.pi * 880 * t) +
-            0.1 * np.random.randn(len(t))).astype(np.float64)
-
-
-def run_demo():
-    """
-    Run all four combinations:
-      1. Image  ×  Addition method
-      2. Image  ×  Override method
-      3. Text   ×  Addition method
-      4. Text   ×  Override method
-    """
-    print("=" * 70)
-    print("  AUDIO STEGANOGRAPHY — IMAGE & TEXT ENCRYPTION DEMO")
-    print("  Based on Nasr et al. (2024), Scientific Reports 14:22054")
-    print("=" * 70)
-
-    henon_params      = {"x0": 0.01, "x1": 0.02, "a": 0.3, "b": 1.4}
-    arnold_iterations = 5
-    alpha             = 0.05
-
-    print("\n  Secret key:")
-    print(f"    Henon  : x0={henon_params['x0']}, x1={henon_params['x1']}, "
-          f"a={henon_params['a']}, b={henon_params['b']}")
-    print(f"    Arnold : {arnold_iterations} iterations")
-    print(f"    Baker  : auto-generated from payload size")
-    print(f"    Alpha  : {alpha}  (addition method strength)")
-
-    img         = _make_test_image(64)
-    secret_text = (
-        "This is a secret message hidden inside an audio file using "
-        "chaotic map encryption and DWT-based audio steganography. "
-        "Based on Nasr et al. (2024)."
-    )
-    cover_audio = _make_cover_audio()
-
-    print(f"\n  Secret image : {img.shape[0]}×{img.shape[1]} grayscale")
-    print(f"  Secret text  : {len(secret_text)} chars — \"{secret_text[:55]}...\"")
-    print(f"  Cover audio  : {len(cover_audio)} samples (2 s at 44.1 kHz)")
-
-    results = {}
-
-    # ── [1/4] Image + Addition ────────────────────────────────────────
-    print("\n" + "─" * 70)
-    print("  [1/4]  IMAGE  ×  ADDITION  (requires original audio to decode)")
-    print("─" * 70)
-
-    stego = embed_addition(cover_audio, img, alpha=alpha,
-                                 henon_params=henon_params,
-                                 arnold_iterations=arnold_iterations)
-    snr = compute_audio_snr(cover_audio, stego[:len(cover_audio)])
-    print(f"  Embedded.   Audio SNR = {snr:.2f} dB")
-
-    recovered = decode_addition(stego, cover_audio,
-                                henon_params=henon_params,
-                                arnold_iterations=arnold_iterations)
-    psnr = compute_psnr(img, recovered)
-    mse  = compute_mse(img, recovered)
-    print(f"  Decoded.    Image PSNR = {psnr:.2f} dB   MSE = {mse:.2f}")
-    print(f"  Shape check: {recovered.shape}  (expected {img.shape})")
-    results["img_add"] = dict(snr=snr, psnr=psnr, mse=mse, needs_orig=True)
-
-    # ── [2/4] Image + Override ────────────────────────────────────────
-    print("\n" + "─" * 70)
-    print("  [2/4]  IMAGE  ×  OVERRIDE  (no original audio needed)")
-    print("─" * 70)
-
-    stego = embed_override(cover_audio, img,
-                                 henon_params=henon_params,
-                                 arnold_iterations=arnold_iterations)
-    snr = compute_audio_snr(cover_audio, stego[:len(cover_audio)])
-    print(f"  Embedded.   Audio SNR = {snr:.2f} dB")
-
-    recovered = decode_override(stego,
-                                henon_params=henon_params,
-                                arnold_iterations=arnold_iterations)
-    psnr = compute_psnr(img, recovered)
-    mse  = compute_mse(img, recovered)
-    print(f"  Decoded.    Image PSNR = {psnr:.2f} dB   MSE = {mse:.2f}")
-    print(f"  Shape check: {recovered.shape}  (expected {img.shape})")
-    results["img_ovr"] = dict(snr=snr, psnr=psnr, mse=mse, needs_orig=False)
-
-    # ── [3/4] Text + Addition ─────────────────────────────────────────
-    print("\n" + "─" * 70)
-    print("  [3/4]  TEXT  ×  ADDITION  (requires original audio to decode)")
-    print("─" * 70)
-
-    stego = embed_addition(cover_audio, secret_text, alpha=alpha,
-                                 henon_params=henon_params,
-                                 arnold_iterations=arnold_iterations)
-    snr = compute_audio_snr(cover_audio, stego[:len(cover_audio)])
-    print(f"  Embedded.   Audio SNR = {snr:.2f} dB")
-
-    recovered = decode_addition(stego, cover_audio,
-                                henon_params=henon_params,
-                                arnold_iterations=arnold_iterations)
-    match = text_match_score(secret_text, recovered)
-    print(f"  Decoded.    Character match = {match:.1f}%")
-    print(f"  Recovered:  \"{recovered[:65]}...\"")
-    results["txt_add"] = dict(snr=snr, match=match, needs_orig=True)
-
-    # ── [4/4] Text + Override ─────────────────────────────────────────
-    print("\n" + "─" * 70)
-    print("  [4/4]  TEXT  ×  OVERRIDE  (no original audio needed)")
-    print("─" * 70)
-
-    stego = embed_override(cover_audio, secret_text,
-                                 henon_params=henon_params,
-                                 arnold_iterations=arnold_iterations)
-    snr = compute_audio_snr(cover_audio, stego[:len(cover_audio)])
-    print(f"  Embedded.   Audio SNR = {snr:.2f} dB")
-
-    recovered = decode_override(stego,
-                                henon_params=henon_params,
-                                arnold_iterations=arnold_iterations)
-    match = text_match_score(secret_text, recovered)
-    print(f"  Decoded.    Character match = {match:.1f}%")
-    print(f"  Recovered:  \"{recovered[:65]}...\"")
-    results["txt_ovr"] = dict(snr=snr, match=match, needs_orig=False)
-
-    # ── Summary table ─────────────────────────────────────────────────
-    print("\n" + "=" * 70)
-    print("  SUMMARY")
-    print("=" * 70)
-    w = 35
-    print(f"  {'Combination':<{w}} {'Audio SNR':>10} {'Quality':>14} {'Needs orig':>11}")
-    print(f"  {'-'*w} {'-'*10} {'-'*14} {'-'*11}")
-
-    r = results["img_add"]
-    q = "PSNR " + str(round(r["psnr"], 1)) + " dB"
-    print(f"  {'Image  + Addition':<{w}} {r['snr']:>9.2f}  {q:>14} {'YES':>11}")
-
-    r = results["img_ovr"]
-    q = "PSNR " + str(round(r["psnr"], 1)) + " dB"
-    print(f"  {'Image  + Override':<{w}} {r['snr']:>9.2f}  {q:>14} {'NO':>11}")
-
-    r = results["txt_add"]
-    q = "Match " + str(round(r["match"])) + "%"
-    print(f"  {'Text   + Addition':<{w}} {r['snr']:>9.2f}  {q:>14} {'YES':>11}")
-
-    r = results["txt_ovr"]
-    q = "Match " + str(round(r["match"])) + "%"
-    print(f"  {'Text   + Override':<{w}} {r['snr']:>9.2f}  {q:>14} {'NO':>11}")
-
-    print("=" * 70)
-
-    # ── Save images ───────────────────────────────────────────────────
-    PILImage.fromarray(img).save("/mnt/user-data/outputs/original_image.png")
-    PILImage.fromarray(results["img_add"].get("recovered",
-        decode_addition(stego, cover_audio,
-                       henon_params=henon_params,
-                       arnold_iterations=arnold_iterations)
-        if False else img)).save("/mnt/user-data/outputs/placeholder.png")
-    print("\n  Saved: original_image.png")
-    print()
-
-
-if __name__ == "__main__":
-    run_demo()
