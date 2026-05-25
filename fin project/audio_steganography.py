@@ -1,37 +1,7 @@
-"""
-
-Audio Steganography with Chaotic Encryption
-============================================
-Based on: Nasr et al. (2024) - Scientific Reports, 14:22054
-
-Supports TWO secret payload types:
-  ─ IMAGE : a grayscale image (2D uint8 numpy array)
-  ─ TEXT  : any UTF-8 string
-
-Both types are encrypted with the same three chaotic maps before hiding.
-
-Two embedding strategies (choose based on your trade-off):
-  ─ ADDITION  : secret is ADDED to the high-frequency DWT band.
-                → Best audio quality (high SNR).
-                → Requires original cover audio to decode.
-  ─ OVERRIDE  : secret REPLACES the high-frequency DWT band entirely.
-                → No original audio needed to decode.
-                → Slightly lower audio quality.
-
-How image vs text are embedded differently:
-  Images use STFT-based conversion (image ↔ spectrogram ↔ audio signal).
-  Text uses direct bit-packing into DWT coefficients (lossless, exact).
-  This distinction matters because STFT is a lossy transform — fine for
-  approximate image recovery, but would corrupt the exact bytes of text.
-
-Dependencies:
-    pip install numpy scipy Pillow PyWavelets
-"""
 
 import numpy as np
 import pywt
 import struct
-from scipy.signal import stft, istft
 from PIL import Image as PILImage
 import math
 
@@ -41,17 +11,7 @@ import math
 # ─────────────────────────────────────────────────────────────────────────────
 
 def henon_encrypt(grid: np.ndarray, x0=0.01, x1=0.02, a=0.3, b=1.4) -> np.ndarray:
-    """
-    Henon chaotic map encryption — XORs every element with a chaotic sequence.
-
-    Generates the sequence using: x[i+2] = 1 - a·x[i+1]² + b·x[i]
-    then converts to integers [0,255] and XORs with the data.
-
-    XOR is self-inverse: encrypt(encrypt(x)) == x, so decrypt == encrypt.
-
-    Works on any 2D uint8 array (image pixels, text bytes packed into a grid).
-    Key parameters: x0, x1, a, b
-    """
+    
     flat = grid.flatten().astype(np.int32)
     n    = len(flat)
 
